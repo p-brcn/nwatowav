@@ -1,21 +1,28 @@
-nwatowav
-========
-
-Converts NWA/NWK to WAV files and OVK to OGG files. Written in GO and uses
-the hasenbanck/nwa library.
+Fork of github.com/hasenbanck/nwatowav
+Adds converting a whole directory
 
 ## REQUIREMENTS
-This programm was written in GO 1.0.3 and needs the github.com/go-rlvm/nwa
-library.
+Go 1.20
 
 ## INSTALLATION
-git clone github.com/hasenbanck/nwatowav
+```
+git clone github.com/p-brcn/nwatowav
 
 cd nwatowav
 
 go build
+```
 
-./nwatowav --inputfile="FILENAME"
+## USAGE
+You can drag and drop a file or directory to the executable and it should convert it.
+
+```
+single file:
+./nwatowav.exe --inputfile="FILENAME"
+
+directory:
+./nwatowav.exe --inputdir="DIR"
+```
 
 ## LICENSE
 This programm is licensed under the GNU General Public License version 3

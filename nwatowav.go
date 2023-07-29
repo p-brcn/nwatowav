@@ -5,15 +5,18 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"github.com/hasenbanck/nwa"
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/hasenbanck/nwa"
 )
 
 var inputfile = flag.String("inputfile", "", "path to the input file.")
+var inputdir = flag.String("inputdir", "", "path to the input directory containing *.nwa files.")
 
 type fileType int
 
@@ -27,57 +30,82 @@ const (
 func main() {
 	flag.Parse()
 
-	if *inputfile == "" {
-		log.Fatal("You need to define an input file!")
-	}
-
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
-	file, err := os.Open(*inputfile)
-	defer file.Close()
-	if err != nil {
-		log.Fatal(err)
+	// Check if a file or folder was dropped onto the executable.
+	// If so, use it as inputfile or inputdir, if not provided via flags.
+	if len(os.Args) > 1 {
+		arg := os.Args[1]
+		if *inputfile == "" && isNWAFile(arg) {
+			*inputfile = arg
+		} else if *inputdir == "" && isDirectory(arg) {
+			*inputdir = arg
+		}
 	}
 
+	// Process the input file or directory based on flags or drag-and-drop.
+	if *inputfile != "" {
+		processNWAFile(*inputfile)
+	}
+
+	if *inputdir != "" {
+		// Get a list of files with the ".nwa" extension in the input directory
+		fileList, err := filepath.Glob(filepath.Join(*inputdir, "*.nwa"))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if len(fileList) == 0 {
+			log.Fatal("No *.nwa files found in the input directory.")
+		}
+
+		for _, inputFile := range fileList {
+			processNWAFile(inputFile)
+		}
+	}
+}
+
+func processNWAFile(inputfile string) {
 	var outfilename, outext, outpath string
 	var filetype fileType
 	var headblksz int64
 
 	switch {
-	case strings.Contains(*inputfile, ".nwa"):
-		{
-			filetype = NWA
-			outext = "wav"
-		}
-	case strings.Contains(*inputfile, ".nwk"):
-		{
-			filetype = NWK
-			headblksz = 12
-			outext = "wav"
-		}
-	case strings.Contains(*inputfile, ".ovk"):
-		{
-			filetype = OVK
-			headblksz = 16
-			outext = "ogg"
-		}
+	case strings.Contains(inputfile, ".nwa"):
+		filetype = NWA
+		outext = "wav"
+	case strings.Contains(inputfile, ".nwk"):
+		filetype = NWK
+		headblksz = 12
+		outext = "wav"
+	case strings.Contains(inputfile, ".ovk"):
+		filetype = OVK
+		headblksz = 16
+		outext = "ogg"
 	}
 	if filetype == NONE {
-		log.Fatal("This program can only handle .nwa/.nwk/.ovk files right now.")
+		log.Printf("Skipping %s: This program can only handle .nwa/.nwk/.ovk files right now.", inputfile)
+		return
 	}
 
-	outfilename = strings.Split(*inputfile, ".")[0]
+	outfilename = strings.Split(filepath.Base(inputfile), ".")[0]
 
 	if filetype == NWA {
+		file, err := os.Open(inputfile)
+		defer file.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+
 		var data io.Reader
 		if data, err = nwa.NewNwaFile(file); err != nil {
 			log.Fatal(err)
 		}
 
-		outpath = fmt.Sprintf("%s.%s", outfilename, outext)
+		outdir := filepath.Dir(inputfile)
+		outpath := filepath.Join(outdir, fmt.Sprintf("%s.%s", outfilename, outext))
 
-		var out *os.File
-		out, err = os.Create(outpath)
+		out, err := os.Create(outpath)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -87,14 +115,21 @@ func main() {
 			log.Fatal(err)
 		}
 	} else { // NWK or OVK files
+		file, err := os.Open(inputfile)
+		defer file.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+
 		var indexcount int32
 		binary.Read(file, binary.LittleEndian, &indexcount)
 		if indexcount <= 0 {
 			if filetype == OVK {
-				log.Fatalf("Invalid Ogg-ovk file: %s: index = %d\n", inputfile, indexcount)
+				log.Printf("Skipping %s: Invalid Ogg-ovk file: index = %d\n", inputfile, indexcount)
 			} else {
-				log.Fatalf("Invalid Koe-nkw file: %s: index = %d\n", inputfile, indexcount)
+				log.Printf("Skipping %s: Invalid Koe-nkw file: index = %d\n", inputfile, indexcount)
 			}
+			return
 		}
 
 		tblsiz := make([]int32, indexcount)
@@ -117,11 +152,11 @@ func main() {
 		c := make(chan int, indexcount)
 		for i = 0; i < indexcount; i++ {
 			if tbloff[i] <= 0 || tblsiz[i] <= 0 {
-				log.Fatalf("Invalid table[%d]: cnt %d, off %d, size %d\n", i, tblcnt[i], tbloff[i], tblsiz[i])
+				log.Printf("Skipping %s: Invalid table[%d]: cnt %d, off %d, size %d\n", inputfile, i, tblcnt[i], tbloff[i], tblsiz[i])
 				continue
 			}
-			outpath = fmt.Sprintf("%s-%d.%s", outfilename, tblcnt[i], outext)
-			go doDecode(filetype, outpath, *inputfile, tbloff[i], tblsiz[i], c)
+			outpath = filepath.Join(*inputdir, fmt.Sprintf("%s-%d.%s", outfilename, tblcnt[i], outext))
+			go doDecode(filetype, outpath, inputfile, tbloff[i], tblsiz[i], c)
 		}
 		for i = 0; i < indexcount; i++ {
 			<-c
@@ -162,4 +197,16 @@ func doDecode(filetype fileType, filename string, datafile string, offset int32,
 		log.Fatal(err)
 	}
 	c <- 1
+}
+
+func isNWAFile(file string) bool {
+	return strings.HasSuffix(strings.ToLower(file), ".nwa")
+}
+
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
 }
